@@ -78,8 +78,17 @@ const SYMANTEC_MANAGED = [
 	'ac50b5fb738aed6cb781cc35fbfff7786f77109ada7c08867c04a573fd5cf9ee',
 ];
 
+$roots = array();
+$ca = file_get_contents('./cacert.pem');
+while (strpos($ca, '-----BEGIN CERTIFICATE-----') !== false) {
+	$start = strpos($ca, '-----BEGIN CERTIFICATE-----');
+	$end = strpos($ca, '-----END CERTIFICATE-----') + 25;
+	$roots[] = substr($ca, $start, $end - $start);
+	$ca = substr($ca, $end);
+}
+
 $conn = new mysqli('127.0.0.1', 'username', 'password', 'database');
-$sql = "SELECT rank, hostname, certs FROM `results` WHERE certs IS NOT NULL";
+$sql = "SELECT rank, hostname, certs FROM `results` WHERE certs <>\"[]\"";
 $result = $conn->query($sql);
 
 while($row = $result->fetch_assoc()) {
@@ -92,8 +101,23 @@ while($row = $result->fetch_assoc()) {
 		$key = openssl_pkey_get_details(openssl_pkey_get_public($cert['Cert']));
 		$der = base64_decode(trim(str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----'], '', $key['key'])));
 		$hashes[] = bin2hex(hash('sha256', $der, true));
-		if (strpos($crt['name'], $row['hostname']) !== false || strpos($crt['extensions']['subjectAltName'], $row['hostname']) !== false) {
+
+		if ((isset($crt['extensions']['basicConstraints']) && strpos($crt['extensions']['basicConstraints'], 'CA:TRUE') === false) ||
+			!isset($crt['extensions']['basicConstraints'])) {
 			$leaf = $crt;
+		}
+
+		if (isset($crt['X509v3 Subject Key Identifier']) && isset($crt['X509v3 Authority Key Identifier'])
+			&& 'keyid:'. $crt['X509v3 Subject Key Identifier'] != $crt['X509v3 Authority Key Identifier']) {
+			foreach ($roots as $pem) {
+				$root = openssl_x509_parse($pem, false);
+				if (isset($root['extensions']['subjectKeyIdentifier']) && isset($crt['X509v3 Authority Key Identifier']) &&
+					$root['extensions']['subjectKeyIdentifier'] === trim(str_replace('keyid:', '', $crt['X509v3 Authority Key Identifier']))) {
+					$key = openssl_pkey_get_details(openssl_pkey_get_public($pem));
+					$der = base64_decode(trim(str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----'], '', $key['key'])));
+					$hashes[] = bin2hex(hash('sha256', $der, true));
+				}
+			}
 		}
 	}
 
