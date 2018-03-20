@@ -88,25 +88,27 @@ while (strpos($ca, '-----BEGIN CERTIFICATE-----') !== false) {
 }
 
 $conn = new mysqli('127.0.0.1', 'username', 'password', 'database');
-$sql = "SELECT rank, hostname, certs FROM `results` WHERE certs <>\"[]\"";
+$sql = "SELECT rank, hostname, certs FROM `results` WHERE certs IS NOT NULL";
 $result = $conn->query($sql);
 
-while($row = $result->fetch_assoc()) {
+while ($row = $result->fetch_assoc()) {
 	$certs = json_decode($row['certs'], true);
 	$hashes = [];
 	$leaf = '';
 
-	foreach($certs as $index => $cert) {
+	if ($certs === null) {
+		continue;
+	}
+
+	foreach ($certs as $index => $cert) {
 		$crt = openssl_x509_parse($cert['Cert'], false);
 		$key = openssl_pkey_get_details(openssl_pkey_get_public($cert['Cert']));
 		$der = base64_decode(trim(str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----'], '', $key['key'])));
 		$hashes[] = bin2hex(hash('sha256', $der, true));
-
-		if ((isset($crt['extensions']['basicConstraints']) && strpos($crt['extensions']['basicConstraints'], 'CA:TRUE') === false) ||
-			!isset($crt['extensions']['basicConstraints'])) {
+		if (isset($crt['name']) && strpos($crt['name'], $row['hostname']) !== false ||
+			isset($crt['extensions']['subjectAltName']) && strpos($crt['extensions']['subjectAltName'], $row['hostname']) !== false) {
 			$leaf = $crt;
 		}
-
 		if (isset($crt['X509v3 Subject Key Identifier']) && isset($crt['X509v3 Authority Key Identifier'])
 			&& 'keyid:'. $crt['X509v3 Subject Key Identifier'] != $crt['X509v3 Authority Key Identifier']) {
 			foreach ($roots as $pem) {
@@ -123,7 +125,10 @@ while($row = $result->fetch_assoc()) {
 
 	if (count(array_intersect($hashes, SYMANTEC_BLACKLIST)) > 0 && count(array_intersect($hashes, SYMANTEC_EXCEPTIONS)) === 0 &&
 		count(array_intersect($hashes, SYMANTEC_MANAGED)) === 0) {
-		$notBefore = $leaf['validFrom_time_t'];
+		$notBefore = isset($leaf['validFrom_time_t']) ? $leaf['validFrom_time_t'] : null;
+		if ($notBefore === null) {
+			continue;
+		}
 		if ($notBefore >= 1512086400 || $notBefore < 1464739200) {
 			file_put_contents('m66.csv', "{$row['rank']},{$row['hostname']}\r\n", FILE_APPEND);
 		} else {
